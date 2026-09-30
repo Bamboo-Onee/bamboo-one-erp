@@ -1,0 +1,1 @@
+# Layer / Module package: src/modules/logistics/domain/entities
