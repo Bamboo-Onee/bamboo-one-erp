@@ -1,0 +1,55 @@
+# Git Ignore para BambooOne ERP
+# Padrão Corporativo para Monolito Modular Python + TypeScript React
+
+# Ambientes Virtuais e Python
+backend/.venv/
+backend/venv/
+backend/ENV/
+.venv/
+venv/
+*.pyc
+__pycache__/
+*.pyo
+*.pyd
+.Python
+backend/.pytest_cache/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# Banco de Dados de Desenvolvimento Local (Preservar se quiser, mas ignorar backups e journals)
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Dependências e Builds Frontend (Node/React)
+frontend/node_modules/
+node_modules/
+frontend/dist/
+dist/
+*.tsbuildinfo
+.eslintcache
+
+# Logs e Processos
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Variáveis de Ambiente e Segredos (NUNCA commitar senhas ou chaves reais)
+.env
+backend/.env
+frontend/.env.local
+*.pem
+*.key
+
+# IDEs e Editores
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
