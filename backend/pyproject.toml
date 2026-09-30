@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crm-logistico-backend"
+version = "0.1.0"
+description = "Monolito Modular em Clean Architecture com FastAPI, SQLAlchemy 2.0 Async, Otimizador 3D e IA"
+authors = [{ name = "Grupo Bamboo Engineering" }]
+requires-python = ">=3.12"
+readme = "README.md"
+
+[tool.pytest.ini_options]
+minversion = "8.0"
+addopts = "-ra -q"
+testpaths = ["tests"]
+asyncio_mode = "auto"
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "W", "UP", "ASYNC"]
+ignore = []
+
+[tool.bandit]
+targets = ["src"]
+exclude_dirs = ["tests", "migrations"]
+skips = ["B101"]
