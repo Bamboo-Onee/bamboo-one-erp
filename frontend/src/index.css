@@ -1,0 +1,24 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg: #f4f7f8;
+  --panel: #ffffff;
+  --nav: #102b3a;
+  --nav2: #183d4e;
+  --ink: #18313f;
+  --muted: #72818a;
+  --line: #dce5e8;
+  --accent: #1e7a8c;
+  --accent2: #2e9e83;
+  --warn: #c77b29;
+  --danger: #bb4e4e;
+}
+
+body {
+  margin: 0;
+  font-family: 'Inter', ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  background-color: var(--bg);
+  color: var(--ink);
+}
