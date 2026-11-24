@@ -6,17 +6,19 @@ do sistema (ex: motor de 3D Bin Packing) e devolve a resposta estruturada acompa
 
 from typing import List, Dict, Any, Optional
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, status
+from fastapi import APIRouter, Depends, status
 
+from src.core.models import UserORM
+from src.modules.auth.presentation.routes.auth_routes import get_current_user
 from src.modules.logistics.domain.services.packing_service import PackingService
 
 router = APIRouter(prefix="/api/v1/ai", tags=["AI Agent (Tool Calling)"])
 
 
 class ChatMessageRequest(BaseModel):
-    prompt: str = Field(..., description="Pergunta ou instrução do operador em linguagem natural")
+    prompt: str = Field(..., min_length=1, max_length=2000, description="Pergunta ou instrução do operador em linguagem natural")
     truck_name: Optional[str] = "Truck Baú"
-    cargo_quantity: Optional[int] = 44
+    cargo_quantity: Optional[int] = Field(default=44, ge=1, le=500)
 
 
 class ChatMessageResponse(BaseModel):
@@ -27,7 +29,10 @@ class ChatMessageResponse(BaseModel):
 
 
 @router.post("/chat", response_model=ChatMessageResponse, status_code=status.HTTP_200_OK)
-async def chat_with_agent(req: ChatMessageRequest):
+async def chat_with_agent(
+    req: ChatMessageRequest,
+    current_user: UserORM = Depends(get_current_user)
+):
     """Processa o prompt do operador, executa Tool Calling contra o motor 3D e devolve o plano explicado."""
     prompt_lower = req.prompt.lower()
 
@@ -60,8 +65,8 @@ async def chat_with_agent(req: ChatMessageRequest):
             {"name": "Volume Frágil", "quantity": 12, "length_m": 0.7, "width_m": 0.55, "height_m": 0.6, "weight_kg": 76.0}
         ]
 
-        # Invocação determinística da ferramenta
-        packing_result = PackingService.calculate_packing(
+        # Invocação determinística assíncrona da ferramenta (ProcessPoolExecutor)
+        packing_result = await PackingService.calculate_packing_async(
             truck_name=req.truck_name or "Truck Baú",
             truck_length=truck_len,
             truck_width=truck_wid,
