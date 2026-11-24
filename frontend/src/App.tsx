@@ -112,6 +112,13 @@ export default function App() {
     ...(token ? { 'Authorization': `Bearer ${token}` } : {})
   });
 
+  // Helpers de RBAC
+  const hasRole = (...allowed: UserRole[]) => {
+    if (!currentUser) return false;
+    if (currentUser.role === 'ADMIN') return true;
+    return allowed.includes(currentUser.role);
+  };
+
   // Login handler
   const handleLogin = async (e?: React.FormEvent, customEmail?: string, customPassword?: string) => {
     if (e) e.preventDefault();
@@ -148,49 +155,115 @@ export default function App() {
   const handleLogout = () => {
     setToken(null);
     setCurrentUser(null);
+    setProducts([]);
+    setCustomers([]);
+    setVehicles([]);
+    setPurchases([]);
+    setImports([]);
+    setStockBalances([]);
+    setSalesOrders([]);
+    setDeliveries([]);
+    setFinancialEntries([]);
+    setFinancialSummary({ total_payable: 0, total_receivable: 0, projected_balance: 0 });
+    setEmployees([]);
     localStorage.removeItem('bamboo_token');
     localStorage.removeItem('bamboo_user');
   };
 
-  // Carregador central de dados da API
-  const fetchAllData = async () => {
+  // Busca segura de recurso individual (só atualiza o estado se res.ok)
+  const fetchResource = async (endpoint: string, setter: (data: any) => void) => {
     try {
-      const [pRes, cRes, vRes, poRes, impRes, stkRes, saleRes, delRes, finRes, finSumRes, empRes] = await Promise.all([
-        fetch(`${API_BASE}/products`, { headers: authHeaders() }),
-        fetch(`${API_BASE}/customers`, { headers: authHeaders() }),
-        fetch(`${API_BASE}/vehicles`, { headers: authHeaders() }),
-        fetch(`${API_BASE}/purchases`, { headers: authHeaders() }),
-        fetch(`${API_BASE}/imports`, { headers: authHeaders() }),
-        fetch(`${API_BASE}/stock/balances`, { headers: authHeaders() }),
-        fetch(`${API_BASE}/sales`, { headers: authHeaders() }),
-        fetch(`${API_BASE}/deliveries`, { headers: authHeaders() }),
-        fetch(`${API_BASE}/finance`, { headers: authHeaders() }),
-        fetch(`${API_BASE}/finance/summary`, { headers: authHeaders() }),
-        fetch(`${API_BASE}/employees`, { headers: authHeaders() })
-      ]);
-      if (pRes.ok) setProducts(await pRes.json());
-      if (cRes.ok) setCustomers(await cRes.json());
-      if (vRes.ok) setVehicles(await vRes.json());
-      if (poRes.ok) setPurchases(await poRes.json());
-      if (impRes.ok) setImports(await impRes.json());
-      if (stkRes.ok) setStockBalances(await stkRes.json());
-      if (saleRes.ok) setSalesOrders(await saleRes.json());
-      if (delRes.ok) setDeliveries(await delRes.json());
-      if (finRes.ok) setFinancialEntries(await finRes.json());
-      if (finSumRes.ok) setFinancialSummary(await finSumRes.json());
-      if (empRes.ok) setEmployees(await empRes.json());
+      const res = await fetch(`${API_BASE}${endpoint}`, { headers: authHeaders() });
+      if (res.ok) {
+        const data = await res.json();
+        setter(data);
+      }
+    } catch (e) {
+      console.warn(`Falha ao carregar ${endpoint}:`, e);
+    }
+  };
+
+  // Carregador central concorrente consciente de RBAC
+  const fetchAllData = async () => {
+    if (!token || !currentUser) return;
+    try {
+      const tasks: Promise<void>[] = [
+        fetchResource('/products', setProducts),
+        fetchResource('/customers', setCustomers),
+        fetchResource('/vehicles', setVehicles)
+      ];
+
+      if (hasRole('COMPRAS', 'FINANCEIRO', 'LOGISTICA')) {
+        tasks.push(
+          fetchResource('/purchases', setPurchases),
+          fetchResource('/imports', setImports)
+        );
+      }
+      if (hasRole('LOGISTICA', 'VENDAS', 'COMPRAS')) {
+        tasks.push(fetchResource('/stock/balances', setStockBalances));
+      }
+      if (hasRole('VENDAS', 'FINANCEIRO', 'LOGISTICA')) {
+        tasks.push(fetchResource('/sales', setSalesOrders));
+      }
+      if (hasRole('LOGISTICA', 'VENDAS')) {
+        tasks.push(fetchResource('/deliveries', setDeliveries));
+      }
+      if (hasRole('FINANCEIRO')) {
+        tasks.push(
+          fetchResource('/finance', setFinancialEntries),
+          fetchResource('/finance/summary', setFinancialSummary)
+        );
+      }
+      if (hasRole('ADMIN')) {
+        tasks.push(fetchResource('/employees', setEmployees));
+      }
+
+      await Promise.allSettled(tasks);
     } catch (e) {
       console.warn("Aguardando backend:", e);
     }
   };
 
+  // Refresh seletivo por módulo para evitar tempestade de 11 requisições a cada clique
+  const refreshModule = async (url: string) => {
+    const tasks: Promise<void>[] = [];
+    if (url.includes('/products')) {
+      tasks.push(fetchResource('/products', setProducts));
+    } else if (url.includes('/customers')) {
+      tasks.push(fetchResource('/customers', setCustomers));
+    } else if (url.includes('/vehicles')) {
+      tasks.push(fetchResource('/vehicles', setVehicles));
+    } else if (url.includes('/purchases')) {
+      tasks.push(fetchResource('/purchases', setPurchases));
+    } else if (url.includes('/imports')) {
+      tasks.push(fetchResource('/imports', setImports));
+    } else if (url.includes('/stock')) {
+      tasks.push(fetchResource('/stock/balances', setStockBalances));
+    } else if (url.includes('/sales')) {
+      tasks.push(fetchResource('/sales', setSalesOrders));
+    } else if (url.includes('/deliveries')) {
+      tasks.push(fetchResource('/deliveries', setDeliveries));
+    } else if (url.includes('/finance')) {
+      tasks.push(
+        fetchResource('/finance', setFinancialEntries),
+        fetchResource('/finance/summary', setFinancialSummary)
+      );
+    } else if (url.includes('/employees')) {
+      tasks.push(fetchResource('/employees', setEmployees));
+    } else {
+      await fetchAllData();
+      return;
+    }
+    await Promise.allSettled(tasks);
+  };
+
   useEffect(() => {
-    if (token) {
+    if (token && currentUser) {
       fetchAllData();
     }
-  }, [token]);
+  }, [token, currentUser?.role]);
 
-  // Envio genérico com tratamento detalhado de erros e confirmação via toast
+  // Envio genérico com tratamento detalhado de erros, confirmação via toast e refresh seletivo
   const handleGenericSubmit = async (url: string, payload: any, closeFn: () => void, successMsg?: string) => {
     try {
       const res = await fetch(url, {
@@ -202,7 +275,7 @@ export default function App() {
         closeFn();
         setToastMessage(successMsg || "Registro criado com sucesso no banco de dados!");
         setTimeout(() => setToastMessage(null), 3500);
-        fetchAllData();
+        await refreshModule(url);
       } else {
         const err = await res.json();
         let msg = "Erro ao processar criação.";
@@ -218,7 +291,7 @@ export default function App() {
     }
   };
 
-  // Exclusão genérica
+  // Exclusão genérica com refresh seletivo
   const handleGenericDelete = async (url: string, label: string) => {
     if (!confirm(`Deseja realmente excluir ${label}?`)) return;
     try {
@@ -226,7 +299,7 @@ export default function App() {
       if (res.ok) {
         setToastMessage(`${label} excluído com sucesso!`);
         setTimeout(() => setToastMessage(null), 3000);
-        fetchAllData();
+        await refreshModule(url);
       } else {
         const err = await res.json();
         alert(err.detail || "Erro ao excluir");
@@ -306,12 +379,19 @@ export default function App() {
     }
   };
 
-  // Helpers de RBAC
-  const hasRole = (...allowed: UserRole[]) => {
-    if (!currentUser) return false;
-    if (currentUser.role === 'ADMIN') return true;
-    return allowed.includes(currentUser.role);
-  };
+  // Banner amigável de restrição RBAC quando o perfil não possui acesso ao módulo
+  const renderRbacNotice = (moduleName: string, allowedRolesLabel: string) => (
+    <div className="bg-amber-50 border border-amber-200 rounded-xl p-6 text-amber-900 shadow-sm">
+      <div className="flex items-center gap-2.5 font-black text-sm mb-1">
+        <span>🔒</span>
+        <span>Acesso Restrito por Perfil (RBAC) — {moduleName}</span>
+      </div>
+      <p className="text-xs text-amber-800">
+        Seu perfil atual (<b>{currentUser?.role}</b>) não possui permissão para visualizar ou operar este módulo.
+        Perfis autorizados: <b>{allowedRolesLabel}</b>.
+      </p>
+    </div>
+  );
 
   // ==============================================================================
   // TELA DE LOGIN (QUANDO NÃO AUTENTICADO)
@@ -610,26 +690,30 @@ export default function App() {
                       </div>
                       <span className="text-[#1e7a8c] font-bold">➔</span>
                     </button>
-                    <button 
-                      onClick={() => { setActivePage('cadastros'); setActiveCadTab('produtos'); setShowProductModal(true); }}
-                      className="w-full text-left p-2.5 border border-[#dce5e8] rounded-lg bg-[#fbfcfc] hover:bg-slate-100 flex items-center justify-between transition-colors cursor-pointer"
-                    >
-                      <div>
-                        <strong className="block text-xs">+ Cadastrar Novo Produto</strong>
-                        <span className="text-[10px] text-[#72818a]">Base mestre com cubagem</span>
-                      </div>
-                      <span className="text-slate-400 font-bold">➔</span>
-                    </button>
-                    <button 
-                      onClick={() => setShowSaleModal(true)}
-                      className="w-full text-left p-2.5 border border-[#dce5e8] rounded-lg bg-[#fbfcfc] hover:bg-slate-100 flex items-center justify-between transition-colors cursor-pointer"
-                    >
-                      <div>
-                        <strong className="block text-xs">+ Emitir Novo Pedido de Venda</strong>
-                        <span className="text-[10px] text-[#72818a]">Comercial integrado ao estoque</span>
-                      </div>
-                      <span className="text-slate-400 font-bold">➔</span>
-                    </button>
+                    {hasRole('COMPRAS', 'LOGISTICA') && (
+                      <button 
+                        onClick={() => { setActivePage('cadastros'); setActiveCadTab('produtos'); setShowProductModal(true); }}
+                        className="w-full text-left p-2.5 border border-[#dce5e8] rounded-lg bg-[#fbfcfc] hover:bg-slate-100 flex items-center justify-between transition-colors cursor-pointer"
+                      >
+                        <div>
+                          <strong className="block text-xs">+ Cadastrar Novo Produto</strong>
+                          <span className="text-[10px] text-[#72818a]">Base mestre com cubagem</span>
+                        </div>
+                        <span className="text-slate-400 font-bold">➔</span>
+                      </button>
+                    )}
+                    {hasRole('VENDAS') && (
+                      <button 
+                        onClick={() => setShowSaleModal(true)}
+                        className="w-full text-left p-2.5 border border-[#dce5e8] rounded-lg bg-[#fbfcfc] hover:bg-slate-100 flex items-center justify-between transition-colors cursor-pointer"
+                      >
+                        <div>
+                          <strong className="block text-xs">+ Emitir Novo Pedido de Venda</strong>
+                          <span className="text-[10px] text-[#72818a]">Comercial integrado ao estoque</span>
+                        </div>
+                        <span className="text-slate-400 font-bold">➔</span>
+                      </button>
+                    )}
                   </div>
                 </div>
               </div>
@@ -664,35 +748,41 @@ export default function App() {
                   <h1 className="text-2xl font-black">Compras nacionais (PO Sequencial)</h1>
                   <div className="text-xs text-[#72818a] mt-1">Gestão de pedidos de compra integrados com entrada de estoque e financeiro</div>
                 </div>
-                <button onClick={() => setShowPurchaseModal(true)} className="bg-[#1e7a8c] hover:bg-[#176270] text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm cursor-pointer">
-                  + Novo Pedido de Compra
-                </button>
+                {hasRole('COMPRAS') && (
+                  <button onClick={() => setShowPurchaseModal(true)} className="bg-[#1e7a8c] hover:bg-[#176270] text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm cursor-pointer">
+                    + Novo Pedido de Compra
+                  </button>
+                )}
               </div>
-              <div className="bg-white border border-[#dce5e8] rounded-xl p-5 shadow-sm overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="border-b border-[#dce5e8] text-[#667780] uppercase tracking-wider">
-                      <th className="py-2 px-2">Nº do Pedido (PO)</th>
-                      <th className="py-2 px-2">Fornecedor</th>
-                      <th className="py-2 px-2">Valor Total</th>
-                      <th className="py-2 px-2">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#edf2f3]">
-                    {purchases.map(p => (
-                      <tr key={p.id} className="hover:bg-slate-50">
-                        <td className="py-3 px-2 font-bold text-[#1e7a8c]">{p.po_number}</td>
-                        <td className="py-3 px-2 font-medium">{p.supplier_name}</td>
-                        <td className="py-3 px-2 font-bold text-[#2e9e83]">R$ {p.total_amount ? p.total_amount.toLocaleString('pt-BR', {minimumFractionDigits: 2}) : '0,00'}</td>
-                        <td className="py-3 px-2"><span className="bg-[#e8f4ef] text-[#27755f] px-2.5 py-1 rounded-full text-xs font-bold">{p.status}</span></td>
+              {!hasRole('COMPRAS', 'FINANCEIRO', 'LOGISTICA') ? (
+                renderRbacNotice('Compras Nacionais', 'ADMIN, COMPRAS, FINANCEIRO ou LOGISTICA')
+              ) : (
+                <div className="bg-white border border-[#dce5e8] rounded-xl p-5 shadow-sm overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-[#dce5e8] text-[#667780] uppercase tracking-wider">
+                        <th className="py-2 px-2">Nº do Pedido (PO)</th>
+                        <th className="py-2 px-2">Fornecedor</th>
+                        <th className="py-2 px-2">Valor Total</th>
+                        <th className="py-2 px-2">Status</th>
                       </tr>
-                    ))}
-                    {purchases.length === 0 && (
-                      <tr><td colSpan={4} className="py-6 text-center text-slate-400">Nenhum pedido de compra emitido ainda. Clique em "+ Novo Pedido de Compra".</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-[#edf2f3]">
+                      {purchases.map(p => (
+                        <tr key={p.id} className="hover:bg-slate-50">
+                          <td className="py-3 px-2 font-bold text-[#1e7a8c]">{p.po_number}</td>
+                          <td className="py-3 px-2 font-medium">{p.supplier_name}</td>
+                          <td className="py-3 px-2 font-bold text-[#2e9e83]">R$ {p.total_amount ? p.total_amount.toLocaleString('pt-BR', {minimumFractionDigits: 2}) : '0,00'}</td>
+                          <td className="py-3 px-2"><span className="bg-[#e8f4ef] text-[#27755f] px-2.5 py-1 rounded-full text-xs font-bold">{p.status}</span></td>
+                        </tr>
+                      ))}
+                      {purchases.length === 0 && (
+                        <tr><td colSpan={4} className="py-6 text-center text-slate-400">Nenhum pedido de compra emitido ainda.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 
@@ -704,43 +794,49 @@ export default function App() {
                   <h1 className="text-2xl font-black">Importações Internacionais & Landed Cost</h1>
                   <div className="text-xs text-[#72818a] mt-1">Acompanhamento aduaneiro, BL, containers, cronograma ETA e rateio de custos</div>
                 </div>
-                <button onClick={() => setShowImportModal(true)} className="bg-[#1e7a8c] hover:bg-[#176270] text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm cursor-pointer">
-                  + Nova Importação
-                </button>
+                {hasRole('COMPRAS') && (
+                  <button onClick={() => setShowImportModal(true)} className="bg-[#1e7a8c] hover:bg-[#176270] text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm cursor-pointer">
+                    + Nova Importação
+                  </button>
+                )}
               </div>
-              <div className="bg-white border border-[#dce5e8] rounded-xl p-5 shadow-sm overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="border-b border-[#dce5e8] text-[#667780] uppercase tracking-wider">
-                      <th className="py-2 px-2">Processo</th>
-                      <th className="py-2 px-2">Fornecedor Internacional</th>
-                      <th className="py-2 px-2">BL / Container</th>
-                      <th className="py-2 px-2">Rota Portuária</th>
-                      <th className="py-2 px-2">Previsão (ETA)</th>
-                      <th className="py-2 px-2">Total USD</th>
-                      <th className="py-2 px-2">Custo Final BRL (Landed)</th>
-                      <th className="py-2 px-2">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#edf2f3]">
-                    {imports.map(i => (
-                      <tr key={i.id} className="hover:bg-slate-50">
-                        <td className="py-3 px-2 font-bold text-[#1e7a8c]">{i.process_number}</td>
-                        <td className="py-3 px-2 font-medium">{i.supplier_name}</td>
-                        <td className="py-3 px-2 text-[#72818a]">{i.bl_number} • {i.container_number}</td>
-                        <td className="py-3 px-2 text-[#72818a]">{i.origin_port} ➔ {i.destination_port}</td>
-                        <td className="py-3 px-2 font-bold">{i.eta}</td>
-                        <td className="py-3 px-2 font-medium">US$ {i.total_usd ? i.total_usd.toLocaleString('en-US') : '0'}</td>
-                        <td className="py-3 px-2 font-bold text-[#2e9e83]">R$ {i.landed_cost_brl ? i.landed_cost_brl.toLocaleString('pt-BR') : '0'}</td>
-                        <td className="py-3 px-2"><span className="bg-[#fff1df] text-[#9b641f] px-2.5 py-1 rounded-full text-xs font-bold">{i.status}</span></td>
+              {!hasRole('COMPRAS', 'FINANCEIRO', 'LOGISTICA') ? (
+                renderRbacNotice('Importações Internacionais', 'ADMIN, COMPRAS, FINANCEIRO ou LOGISTICA')
+              ) : (
+                <div className="bg-white border border-[#dce5e8] rounded-xl p-5 shadow-sm overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-[#dce5e8] text-[#667780] uppercase tracking-wider">
+                        <th className="py-2 px-2">Processo</th>
+                        <th className="py-2 px-2">Fornecedor Internacional</th>
+                        <th className="py-2 px-2">BL / Container</th>
+                        <th className="py-2 px-2">Rota Portuária</th>
+                        <th className="py-2 px-2">Previsão (ETA)</th>
+                        <th className="py-2 px-2">Total USD</th>
+                        <th className="py-2 px-2">Custo Final BRL (Landed)</th>
+                        <th className="py-2 px-2">Status</th>
                       </tr>
-                    ))}
-                    {imports.length === 0 && (
-                      <tr><td colSpan={8} className="py-6 text-center text-slate-400">Nenhum processo de importação registrado. Clique em "+ Nova Importação".</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-[#edf2f3]">
+                      {imports.map(i => (
+                        <tr key={i.id} className="hover:bg-slate-50">
+                          <td className="py-3 px-2 font-bold text-[#1e7a8c]">{i.process_number}</td>
+                          <td className="py-3 px-2 font-medium">{i.supplier_name}</td>
+                          <td className="py-3 px-2 text-[#72818a]">{i.bl_number} • {i.container_number}</td>
+                          <td className="py-3 px-2 text-[#72818a]">{i.origin_port} ➔ {i.destination_port}</td>
+                          <td className="py-3 px-2 font-bold">{i.eta}</td>
+                          <td className="py-3 px-2 font-medium">US$ {i.total_usd ? i.total_usd.toLocaleString('en-US') : '0'}</td>
+                          <td className="py-3 px-2 font-bold text-[#2e9e83]">R$ {i.landed_cost_brl ? i.landed_cost_brl.toLocaleString('pt-BR') : '0'}</td>
+                          <td className="py-3 px-2"><span className="bg-[#fff1df] text-[#9b641f] px-2.5 py-1 rounded-full text-xs font-bold">{i.status}</span></td>
+                        </tr>
+                      ))}
+                      {imports.length === 0 && (
+                        <tr><td colSpan={8} className="py-6 text-center text-slate-400">Nenhum processo de importação registrado.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 
@@ -752,39 +848,45 @@ export default function App() {
                   <h1 className="text-2xl font-black">Estoque & Rastreabilidade Transacional</h1>
                   <div className="text-xs text-[#72818a] mt-1">Saldos por depósito, quantidades disponíveis e reservadas para expedição</div>
                 </div>
-                <button onClick={() => setShowStockModal(true)} className="bg-[#1e7a8c] hover:bg-[#176270] text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm cursor-pointer">
-                  + Registrar Movimentação
-                </button>
+                {hasRole('LOGISTICA', 'COMPRAS') && (
+                  <button onClick={() => setShowStockModal(true)} className="bg-[#1e7a8c] hover:bg-[#176270] text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm cursor-pointer">
+                    + Registrar Movimentação
+                  </button>
+                )}
               </div>
-              <div className="bg-white border border-[#dce5e8] rounded-xl p-5 shadow-sm overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="border-b border-[#dce5e8] text-[#667780] uppercase tracking-wider">
-                      <th className="py-2.5 px-3">SKU</th>
-                      <th className="py-2.5 px-3">Nome do Produto</th>
-                      <th className="py-2.5 px-3">Depósito</th>
-                      <th className="py-2.5 px-3 font-bold text-[#27755f]">Qtd Disponível</th>
-                      <th className="py-2.5 px-3 font-bold text-[#9b641f]">Qtd Reservada</th>
-                      <th className="py-2.5 px-3">Total Físico</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#edf2f3]">
-                    {stockBalances.map(s => (
-                      <tr key={s.id} className="hover:bg-slate-50">
-                        <td className="py-3 px-3 font-bold text-[#1e7a8c]">{s.product_sku}</td>
-                        <td className="py-3 px-3 font-medium">{s.product_name}</td>
-                        <td className="py-3 px-3 text-[#72818a]">{s.warehouse_name}</td>
-                        <td className="py-3 px-3 font-black text-emerald-600 text-sm">{s.quantity_available}</td>
-                        <td className="py-3 px-3 font-black text-amber-600 text-sm">{s.quantity_reserved}</td>
-                        <td className="py-3 px-3 font-bold">{s.quantity_available + s.quantity_reserved} un</td>
+              {!hasRole('LOGISTICA', 'VENDAS', 'COMPRAS') ? (
+                renderRbacNotice('Estoque & Armazenagem', 'ADMIN, LOGISTICA, VENDAS ou COMPRAS')
+              ) : (
+                <div className="bg-white border border-[#dce5e8] rounded-xl p-5 shadow-sm overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-[#dce5e8] text-[#667780] uppercase tracking-wider">
+                        <th className="py-2.5 px-3">SKU</th>
+                        <th className="py-2.5 px-3">Nome do Produto</th>
+                        <th className="py-2.5 px-3">Depósito</th>
+                        <th className="py-2.5 px-3 font-bold text-[#27755f]">Qtd Disponível</th>
+                        <th className="py-2.5 px-3 font-bold text-[#9b641f]">Qtd Reservada</th>
+                        <th className="py-2.5 px-3">Total Físico</th>
                       </tr>
-                    ))}
-                    {stockBalances.length === 0 && (
-                      <tr><td colSpan={6} className="py-6 text-center text-slate-400">Nenhum saldo cadastrado. Registre uma movimentação no botão acima.</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-[#edf2f3]">
+                      {stockBalances.map(s => (
+                        <tr key={s.id} className="hover:bg-slate-50">
+                          <td className="py-3 px-3 font-bold text-[#1e7a8c]">{s.product_sku}</td>
+                          <td className="py-3 px-3 font-medium">{s.product_name}</td>
+                          <td className="py-3 px-3 text-[#72818a]">{s.warehouse_name}</td>
+                          <td className="py-3 px-3 font-black text-emerald-600 text-sm">{s.quantity_available}</td>
+                          <td className="py-3 px-3 font-black text-amber-600 text-sm">{s.quantity_reserved}</td>
+                          <td className="py-3 px-3 font-bold">{s.quantity_available + s.quantity_reserved} un</td>
+                        </tr>
+                      ))}
+                      {stockBalances.length === 0 && (
+                        <tr><td colSpan={6} className="py-6 text-center text-slate-400">Nenhum saldo cadastrado.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 
@@ -796,37 +898,43 @@ export default function App() {
                   <h1 className="text-2xl font-black">Comercial & Vendas</h1>
                   <div className="text-xs text-[#72818a] mt-1">Pedidos de venda com reserva automática de estoque e geração de títulos a receber</div>
                 </div>
-                <button onClick={() => setShowSaleModal(true)} className="bg-[#1e7a8c] hover:bg-[#176270] text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm cursor-pointer">
-                  + Novo Pedido de Venda
-                </button>
+                {hasRole('VENDAS') && (
+                  <button onClick={() => setShowSaleModal(true)} className="bg-[#1e7a8c] hover:bg-[#176270] text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm cursor-pointer">
+                    + Novo Pedido de Venda
+                  </button>
+                )}
               </div>
-              <div className="bg-white border border-[#dce5e8] rounded-xl p-5 shadow-sm overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="border-b border-[#dce5e8] text-[#667780] uppercase tracking-wider">
-                      <th className="py-2.5 px-3">Nº Venda</th>
-                      <th className="py-2.5 px-3">Cliente</th>
-                      <th className="py-2.5 px-3">Representante</th>
-                      <th className="py-2.5 px-3">Valor Total</th>
-                      <th className="py-2.5 px-3">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#edf2f3]">
-                    {salesOrders.map(so => (
-                      <tr key={so.id} className="hover:bg-slate-50">
-                        <td className="py-3 px-3 font-bold text-[#1e7a8c]">{so.order_number}</td>
-                        <td className="py-3 px-3 font-semibold">{so.customer_name}</td>
-                        <td className="py-3 px-3 text-[#72818a]">{so.representative_name}</td>
-                        <td className="py-3 px-3 font-black text-[#2e9e83]">R$ {so.total_amount ? so.total_amount.toLocaleString('pt-BR', {minimumFractionDigits: 2}) : '0,00'}</td>
-                        <td className="py-3 px-3"><span className="bg-[#e8f4ef] text-[#27755f] px-2.5 py-1 rounded-full text-xs font-bold">{so.status}</span></td>
+              {!hasRole('VENDAS', 'FINANCEIRO', 'LOGISTICA') ? (
+                renderRbacNotice('Comercial & Vendas', 'ADMIN, VENDAS, FINANCEIRO ou LOGISTICA')
+              ) : (
+                <div className="bg-white border border-[#dce5e8] rounded-xl p-5 shadow-sm overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-[#dce5e8] text-[#667780] uppercase tracking-wider">
+                        <th className="py-2.5 px-3">Nº Venda</th>
+                        <th className="py-2.5 px-3">Cliente</th>
+                        <th className="py-2.5 px-3">Representante</th>
+                        <th className="py-2.5 px-3">Valor Total</th>
+                        <th className="py-2.5 px-3">Status</th>
                       </tr>
-                    ))}
-                    {salesOrders.length === 0 && (
-                      <tr><td colSpan={5} className="py-6 text-center text-slate-400">Nenhum pedido de venda registrado. Clique em "+ Novo Pedido de Venda".</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-[#edf2f3]">
+                      {salesOrders.map(so => (
+                        <tr key={so.id} className="hover:bg-slate-50">
+                          <td className="py-3 px-3 font-bold text-[#1e7a8c]">{so.order_number}</td>
+                          <td className="py-3 px-3 font-semibold">{so.customer_name}</td>
+                          <td className="py-3 px-3 text-[#72818a]">{so.representative_name}</td>
+                          <td className="py-3 px-3 font-black text-[#2e9e83]">R$ {so.total_amount ? so.total_amount.toLocaleString('pt-BR', {minimumFractionDigits: 2}) : '0,00'}</td>
+                          <td className="py-3 px-3"><span className="bg-[#e8f4ef] text-[#27755f] px-2.5 py-1 rounded-full text-xs font-bold">{so.status}</span></td>
+                        </tr>
+                      ))}
+                      {salesOrders.length === 0 && (
+                        <tr><td colSpan={5} className="py-6 text-center text-slate-400">Nenhum pedido de venda registrado.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 
@@ -838,39 +946,45 @@ export default function App() {
                   <h1 className="text-2xl font-black">Produção & Entregas (Romaneios)</h1>
                   <div className="text-xs text-[#72818a] mt-1">Planejamento de rotas, separação e vínculo obrigatório com o plano de carga 3D</div>
                 </div>
-                <button onClick={() => setShowDeliveryModal(true)} className="bg-[#1e7a8c] hover:bg-[#176270] text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm cursor-pointer">
-                  + Nova Entrega
-                </button>
+                {hasRole('LOGISTICA') && (
+                  <button onClick={() => setShowDeliveryModal(true)} className="bg-[#1e7a8c] hover:bg-[#176270] text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm cursor-pointer">
+                    + Nova Entrega
+                  </button>
+                )}
               </div>
-              <div className="bg-white border border-[#dce5e8] rounded-xl p-5 shadow-sm overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="border-b border-[#dce5e8] text-[#667780] uppercase tracking-wider">
-                      <th className="py-2.5 px-3">Entrega</th>
-                      <th className="py-2.5 px-3">Cliente</th>
-                      <th className="py-2.5 px-3">Destino</th>
-                      <th className="py-2.5 px-3">Carga / Volumes</th>
-                      <th className="py-2.5 px-3">Caminhão Vinculado</th>
-                      <th className="py-2.5 px-3">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#edf2f3]">
-                    {deliveries.map(d => (
-                      <tr key={d.id} className="hover:bg-slate-50">
-                        <td className="py-3 px-3 font-bold text-[#1e7a8c]">{d.delivery_number}</td>
-                        <td className="py-3 px-3 font-semibold">{d.customer_name}</td>
-                        <td className="py-3 px-3 text-[#72818a]">{d.destination_city}</td>
-                        <td className="py-3 px-3 font-bold">{d.total_volumes} volumes</td>
-                        <td className="py-3 px-3 font-mono text-slate-600">{d.vehicle_plate || '—'}</td>
-                        <td className="py-3 px-3"><span className="bg-[#e8f4ef] text-[#27755f] px-2.5 py-1 rounded-full text-xs font-bold">{d.status}</span></td>
+              {!hasRole('LOGISTICA', 'VENDAS') ? (
+                renderRbacNotice('Produção & Entregas', 'ADMIN, LOGISTICA ou VENDAS')
+              ) : (
+                <div className="bg-white border border-[#dce5e8] rounded-xl p-5 shadow-sm overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-[#dce5e8] text-[#667780] uppercase tracking-wider">
+                        <th className="py-2.5 px-3">Entrega</th>
+                        <th className="py-2.5 px-3">Cliente</th>
+                        <th className="py-2.5 px-3">Destino</th>
+                        <th className="py-2.5 px-3">Carga / Volumes</th>
+                        <th className="py-2.5 px-3">Caminhão Vinculado</th>
+                        <th className="py-2.5 px-3">Status</th>
                       </tr>
-                    ))}
-                    {deliveries.length === 0 && (
-                      <tr><td colSpan={6} className="py-6 text-center text-slate-400">Nenhum romaneio de entrega cadastrado. Clique em "+ Nova Entrega".</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-[#edf2f3]">
+                      {deliveries.map(d => (
+                        <tr key={d.id} className="hover:bg-slate-50">
+                          <td className="py-3 px-3 font-bold text-[#1e7a8c]">{d.delivery_number}</td>
+                          <td className="py-3 px-3 font-semibold">{d.customer_name}</td>
+                          <td className="py-3 px-3 text-[#72818a]">{d.destination_city}</td>
+                          <td className="py-3 px-3 font-bold">{d.total_volumes} volumes</td>
+                          <td className="py-3 px-3 font-mono text-slate-600">{d.vehicle_plate || '—'}</td>
+                          <td className="py-3 px-3"><span className="bg-[#e8f4ef] text-[#27755f] px-2.5 py-1 rounded-full text-xs font-bold">{d.status}</span></td>
+                        </tr>
+                      ))}
+                      {deliveries.length === 0 && (
+                        <tr><td colSpan={6} className="py-6 text-center text-slate-400">Nenhum romaneio de entrega cadastrado.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 
@@ -956,13 +1070,13 @@ export default function App() {
                   <div className="text-xs text-[#72818a] mt-1">Produtos, clientes e veículos persistidos com isolamento de dados</div>
                 </div>
                 <div className="flex gap-2">
-                  {activeCadTab === 'produtos' && (
+                  {activeCadTab === 'produtos' && hasRole('COMPRAS', 'LOGISTICA') && (
                     <button onClick={() => setShowProductModal(true)} className="bg-[#1e7a8c] hover:bg-[#176270] text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm cursor-pointer">+ Novo Produto</button>
                   )}
-                  {activeCadTab === 'clientes' && (
+                  {activeCadTab === 'clientes' && hasRole('VENDAS', 'FINANCEIRO') && (
                     <button onClick={() => setShowCustomerModal(true)} className="bg-[#1e7a8c] hover:bg-[#176270] text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm cursor-pointer">+ Novo Cliente</button>
                   )}
-                  {activeCadTab === 'veiculos' && (
+                  {activeCadTab === 'veiculos' && hasRole('LOGISTICA') && (
                     <button onClick={() => setShowVehicleModal(true)} className="bg-[#1e7a8c] hover:bg-[#176270] text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm cursor-pointer">+ Novo Veículo</button>
                   )}
                 </div>
@@ -999,14 +1113,20 @@ export default function App() {
                           <td className="py-3 px-3 font-bold text-[#2e9e83]">{p.volume_m3} m³</td>
                           <td className="py-3 px-3">{p.weight_kg} kg</td>
                           <td className="py-3 px-3 text-right">
-                            <button onClick={() => handleGenericDelete(`${API_BASE}/products/${p.id}`, `Produto ${p.sku}`)} className="text-rose-600 font-bold hover:underline cursor-pointer">
-                              Excluir
-                            </button>
+                            {hasRole('ADMIN') ? (
+                              <button onClick={() => handleGenericDelete(`${API_BASE}/products/${p.id}`, `Produto ${p.sku}`)} className="text-rose-600 font-bold hover:underline cursor-pointer">
+                                Excluir
+                              </button>
+                            ) : (
+                              <button disabled title="Restrito a Administradores" className="text-slate-300 font-bold cursor-not-allowed">
+                                Excluir
+                              </button>
+                            )}
                           </td>
                         </tr>
                       ))}
                       {products.length === 0 && (
-                        <tr><td colSpan={7} className="py-6 text-center text-slate-400">Nenhum produto cadastrado ainda. Clique em "+ Novo Produto".</td></tr>
+                        <tr><td colSpan={7} className="py-6 text-center text-slate-400">Nenhum produto cadastrado ainda.</td></tr>
                       )}
                     </tbody>
                   </table>
@@ -1038,14 +1158,20 @@ export default function App() {
                           <td className="py-3 px-3 text-[#72818a]">{c.delivery_address}</td>
                           <td className="py-3 px-3 font-bold text-[#2e9e83]">R$ {c.credit_limit ? c.credit_limit.toFixed(2) : '0,00'}</td>
                           <td className="py-3 px-3 text-right">
-                            <button onClick={() => handleGenericDelete(`${API_BASE}/customers/${c.id}`, `Cliente ${c.name}`)} className="text-rose-600 font-bold hover:underline cursor-pointer">
-                              Excluir
-                            </button>
+                            {hasRole('ADMIN') ? (
+                              <button onClick={() => handleGenericDelete(`${API_BASE}/customers/${c.id}`, `Cliente ${c.name}`)} className="text-rose-600 font-bold hover:underline cursor-pointer">
+                                Excluir
+                              </button>
+                            ) : (
+                              <button disabled title="Restrito a Administradores" className="text-slate-300 font-bold cursor-not-allowed">
+                                Excluir
+                              </button>
+                            )}
                           </td>
                         </tr>
                       ))}
                       {customers.length === 0 && (
-                        <tr><td colSpan={7} className="py-6 text-center text-slate-400">Nenhum cliente cadastrado ainda. Clique em "+ Novo Cliente".</td></tr>
+                        <tr><td colSpan={7} className="py-6 text-center text-slate-400">Nenhum cliente cadastrado ainda.</td></tr>
                       )}
                     </tbody>
                   </table>
@@ -1077,14 +1203,20 @@ export default function App() {
                           <td className="py-3 px-3 font-bold text-[#2e9e83]">{v.useful_volume_m3 ? v.useful_volume_m3.toFixed(2) : (v.length_m * v.width_m * v.height_m).toFixed(2)} m³</td>
                           <td className="py-3 px-3 font-black">{v.max_payload_kg ? v.max_payload_kg.toLocaleString('pt-BR') : '0'} kg</td>
                           <td className="py-3 px-3 text-right">
-                            <button onClick={() => handleGenericDelete(`${API_BASE}/vehicles/${v.id}`, `Veículo ${v.plate}`)} className="text-rose-600 font-bold hover:underline cursor-pointer">
-                              Excluir
-                            </button>
+                            {hasRole('ADMIN') ? (
+                              <button onClick={() => handleGenericDelete(`${API_BASE}/vehicles/${v.id}`, `Veículo ${v.plate}`)} className="text-rose-600 font-bold hover:underline cursor-pointer">
+                                Excluir
+                              </button>
+                            ) : (
+                              <button disabled title="Restrito a Administradores" className="text-slate-300 font-bold cursor-not-allowed">
+                                Excluir
+                              </button>
+                            )}
                           </td>
                         </tr>
                       ))}
                       {vehicles.length === 0 && (
-                        <tr><td colSpan={7} className="py-6 text-center text-slate-400">Nenhum veículo cadastrado na frota. Clique em "+ Novo Veículo".</td></tr>
+                        <tr><td colSpan={7} className="py-6 text-center text-slate-400">Nenhum veículo cadastrado na frota.</td></tr>
                       )}
                     </tbody>
                   </table>
@@ -1101,66 +1233,74 @@ export default function App() {
                   <h1 className="text-2xl font-black">Financeiro (AP/AR & Fluxo de Caixa)</h1>
                   <div className="text-xs text-[#72818a] mt-1">Títulos a pagar e a receber com liquidação e integração transacional</div>
                 </div>
-                <button onClick={() => setShowFinanceModal(true)} className="bg-[#1e7a8c] hover:bg-[#176270] text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm cursor-pointer">
-                  + Novo Lançamento
-                </button>
+                {hasRole('FINANCEIRO') && (
+                  <button onClick={() => setShowFinanceModal(true)} className="bg-[#1e7a8c] hover:bg-[#176270] text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm cursor-pointer">
+                    + Novo Lançamento
+                  </button>
+                )}
               </div>
 
-              <div className="grid grid-cols-3 gap-3.5 mb-5">
-                <div className="bg-white border border-[#dce5e8] rounded-xl p-4 shadow-sm">
-                  <div className="text-xs text-[#72818a]">Total a Pagar (AP)</div>
-                  <div className="text-2xl font-black text-rose-600 my-1">R$ {financialSummary.total_payable.toLocaleString('pt-BR', {minimumFractionDigits: 2})}</div>
-                  <div className="text-xs text-[#72818a]">Alimentado por Compras/RH</div>
-                </div>
-                <div className="bg-white border border-[#dce5e8] rounded-xl p-4 shadow-sm">
-                  <div className="text-xs text-[#72818a]">Total a Receber (AR)</div>
-                  <div className="text-2xl font-black text-emerald-600 my-1">R$ {financialSummary.total_receivable.toLocaleString('pt-BR', {minimumFractionDigits: 2})}</div>
-                  <div className="text-xs text-[#72818a]">Alimentado por Vendas</div>
-                </div>
-                <div className="bg-white border border-[#dce5e8] rounded-xl p-4 shadow-sm">
-                  <div className="text-xs text-[#72818a]">Saldo Projetado</div>
-                  <div className={`text-2xl font-black my-1 ${financialSummary.projected_balance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
-                    R$ {financialSummary.projected_balance.toLocaleString('pt-BR', {minimumFractionDigits: 2})}
+              {!hasRole('FINANCEIRO') ? (
+                renderRbacNotice('Financeiro (AP/AR & Fluxo de Caixa)', 'ADMIN ou FINANCEIRO')
+              ) : (
+                <>
+                  <div className="grid grid-cols-3 gap-3.5 mb-5">
+                    <div className="bg-white border border-[#dce5e8] rounded-xl p-4 shadow-sm">
+                      <div className="text-xs text-[#72818a]">Total a Pagar (AP)</div>
+                      <div className="text-2xl font-black text-rose-600 my-1">R$ {financialSummary.total_payable.toLocaleString('pt-BR', {minimumFractionDigits: 2})}</div>
+                      <div className="text-xs text-[#72818a]">Alimentado por Compras/RH</div>
+                    </div>
+                    <div className="bg-white border border-[#dce5e8] rounded-xl p-4 shadow-sm">
+                      <div className="text-xs text-[#72818a]">Total a Receber (AR)</div>
+                      <div className="text-2xl font-black text-emerald-600 my-1">R$ {financialSummary.total_receivable.toLocaleString('pt-BR', {minimumFractionDigits: 2})}</div>
+                      <div className="text-xs text-[#72818a]">Alimentado por Vendas</div>
+                    </div>
+                    <div className="bg-white border border-[#dce5e8] rounded-xl p-4 shadow-sm">
+                      <div className="text-xs text-[#72818a]">Saldo Projetado</div>
+                      <div className={`text-2xl font-black my-1 ${financialSummary.projected_balance >= 0 ? 'text-emerald-600' : 'text-rose-600'}`}>
+                        R$ {financialSummary.projected_balance.toLocaleString('pt-BR', {minimumFractionDigits: 2})}
+                      </div>
+                      <div className="text-xs text-[#72818a]">Fluxo de Caixa em Aberto</div>
+                    </div>
                   </div>
-                  <div className="text-xs text-[#72818a]">Fluxo de Caixa em Aberto</div>
-                </div>
-              </div>
 
-              <div className="bg-white border border-[#dce5e8] rounded-xl p-5 shadow-sm overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="border-b border-[#dce5e8] text-[#667780] uppercase tracking-wider">
-                      <th className="py-2.5 px-3">Tipo</th>
-                      <th className="py-2.5 px-3">Descrição</th>
-                      <th className="py-2.5 px-3">Entidade (Cliente/Fornecedor)</th>
-                      <th className="py-2.5 px-3">Categoria</th>
-                      <th className="py-2.5 px-3">Vencimento</th>
-                      <th className="py-2.5 px-3">Valor</th>
-                      <th className="py-2.5 px-3">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#edf2f3]">
-                    {financialEntries.map(f => (
-                      <tr key={f.id} className="hover:bg-slate-50">
-                        <td className="py-3 px-3">
-                          <span className={`px-2 py-0.5 rounded text-[11px] font-black ${f.entry_type === 'PAGAR' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>
-                            {f.entry_type}
-                          </span>
-                        </td>
-                        <td className="py-3 px-3 font-semibold">{f.description}</td>
-                        <td className="py-3 px-3 text-[#72818a]">{f.entity_name}</td>
-                        <td className="py-3 px-3 text-[#72818a]">{f.category}</td>
-                        <td className="py-3 px-3 font-medium">{f.due_date}</td>
-                        <td className="py-3 px-3 font-black text-sm">R$ {f.amount.toLocaleString('pt-BR', {minimumFractionDigits: 2})}</td>
-                        <td className="py-3 px-3"><span className="bg-[#fff1df] text-[#9b641f] px-2.5 py-1 rounded-full text-xs font-bold">{f.status}</span></td>
-                      </tr>
-                    ))}
-                    {financialEntries.length === 0 && (
-                      <tr><td colSpan={7} className="py-6 text-center text-slate-400">Nenhum título financeiro cadastrado. Clique em "+ Novo Lançamento".</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                  <div className="bg-white border border-[#dce5e8] rounded-xl p-5 shadow-sm overflow-x-auto">
+                    <table className="w-full text-left text-xs border-collapse">
+                      <thead>
+                        <tr className="border-b border-[#dce5e8] text-[#667780] uppercase tracking-wider">
+                          <th className="py-2.5 px-3">Tipo</th>
+                          <th className="py-2.5 px-3">Descrição</th>
+                          <th className="py-2.5 px-3">Entidade (Cliente/Fornecedor)</th>
+                          <th className="py-2.5 px-3">Categoria</th>
+                          <th className="py-2.5 px-3">Vencimento</th>
+                          <th className="py-2.5 px-3">Valor</th>
+                          <th className="py-2.5 px-3">Status</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-[#edf2f3]">
+                        {financialEntries.map(f => (
+                          <tr key={f.id} className="hover:bg-slate-50">
+                            <td className="py-3 px-3">
+                              <span className={`px-2 py-0.5 rounded text-[11px] font-black ${f.entry_type === 'PAGAR' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>
+                                {f.entry_type}
+                              </span>
+                            </td>
+                            <td className="py-3 px-3 font-semibold">{f.description}</td>
+                            <td className="py-3 px-3 text-[#72818a]">{f.entity_name}</td>
+                            <td className="py-3 px-3 text-[#72818a]">{f.category}</td>
+                            <td className="py-3 px-3 font-medium">{f.due_date}</td>
+                            <td className="py-3 px-3 font-black text-sm">R$ {f.amount.toLocaleString('pt-BR', {minimumFractionDigits: 2})}</td>
+                            <td className="py-3 px-3"><span className="bg-[#fff1df] text-[#9b641f] px-2.5 py-1 rounded-full text-xs font-bold">{f.status}</span></td>
+                          </tr>
+                        ))}
+                        {financialEntries.length === 0 && (
+                          <tr><td colSpan={7} className="py-6 text-center text-slate-400">Nenhum título financeiro cadastrado.</td></tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </>
+              )}
             </div>
           )}
 
@@ -1172,41 +1312,47 @@ export default function App() {
                   <h1 className="text-2xl font-black">Recursos Humanos (RH)</h1>
                   <div className="text-xs text-[#72818a] mt-1">Colaboradores, cargos, evolução salarial e folha com envio ao financeiro</div>
                 </div>
-                <button onClick={() => setShowEmployeeModal(true)} className="bg-[#1e7a8c] hover:bg-[#176270] text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm cursor-pointer">
-                  + Novo Funcionário
-                </button>
+                {hasRole('ADMIN') && (
+                  <button onClick={() => setShowEmployeeModal(true)} className="bg-[#1e7a8c] hover:bg-[#176270] text-white font-bold text-xs px-4 py-2.5 rounded-lg shadow-sm cursor-pointer">
+                    + Novo Funcionário
+                  </button>
+                )}
               </div>
-              <div className="bg-white border border-[#dce5e8] rounded-xl p-5 shadow-sm overflow-x-auto">
-                <table className="w-full text-left text-xs border-collapse">
-                  <thead>
-                    <tr className="border-b border-[#dce5e8] text-[#667780] uppercase tracking-wider">
-                      <th className="py-2.5 px-3">Nome</th>
-                      <th className="py-2.5 px-3">CPF</th>
-                      <th className="py-2.5 px-3">Cargo</th>
-                      <th className="py-2.5 px-3">Departamento</th>
-                      <th className="py-2.5 px-3">Salário</th>
-                      <th className="py-2.5 px-3">Admissão</th>
-                      <th className="py-2.5 px-3">Status</th>
-                    </tr>
-                  </thead>
-                  <tbody className="divide-y divide-[#edf2f3]">
-                    {employees.map(e => (
-                      <tr key={e.id} className="hover:bg-slate-50">
-                        <td className="py-3 px-3 font-bold">{e.name}</td>
-                        <td className="py-3 px-3 font-mono text-[#1e7a8c]">{e.cpf}</td>
-                        <td className="py-3 px-3 font-semibold">{e.role}</td>
-                        <td className="py-3 px-3 text-[#72818a]">{e.department}</td>
-                        <td className="py-3 px-3 font-black text-emerald-600">R$ {e.salary.toLocaleString('pt-BR', {minimumFractionDigits: 2})}</td>
-                        <td className="py-3 px-3 text-[#72818a]">{e.admission_date}</td>
-                        <td className="py-3 px-3"><span className="bg-[#e8f4ef] text-[#27755f] px-2.5 py-1 rounded-full text-xs font-bold">{e.status}</span></td>
+              {!hasRole('ADMIN') ? (
+                renderRbacNotice('Recursos Humanos (RH) & Folha Salarial', 'ADMIN')
+              ) : (
+                <div className="bg-white border border-[#dce5e8] rounded-xl p-5 shadow-sm overflow-x-auto">
+                  <table className="w-full text-left text-xs border-collapse">
+                    <thead>
+                      <tr className="border-b border-[#dce5e8] text-[#667780] uppercase tracking-wider">
+                        <th className="py-2.5 px-3">Nome</th>
+                        <th className="py-2.5 px-3">CPF</th>
+                        <th className="py-2.5 px-3">Cargo</th>
+                        <th className="py-2.5 px-3">Departamento</th>
+                        <th className="py-2.5 px-3">Salário</th>
+                        <th className="py-2.5 px-3">Admissão</th>
+                        <th className="py-2.5 px-3">Status</th>
                       </tr>
-                    ))}
-                    {employees.length === 0 && (
-                      <tr><td colSpan={7} className="py-6 text-center text-slate-400">Nenhum funcionário cadastrado. Clique em "+ Novo Funcionário".</td></tr>
-                    )}
-                  </tbody>
-                </table>
-              </div>
+                    </thead>
+                    <tbody className="divide-y divide-[#edf2f3]">
+                      {employees.map(e => (
+                        <tr key={e.id} className="hover:bg-slate-50">
+                          <td className="py-3 px-3 font-bold">{e.name}</td>
+                          <td className="py-3 px-3 font-mono text-[#1e7a8c]">{e.cpf}</td>
+                          <td className="py-3 px-3 font-semibold">{e.role}</td>
+                          <td className="py-3 px-3 text-[#72818a]">{e.department}</td>
+                          <td className="py-3 px-3 font-black text-emerald-600">R$ {e.salary.toLocaleString('pt-BR', {minimumFractionDigits: 2})}</td>
+                          <td className="py-3 px-3 text-[#72818a]">{e.admission_date}</td>
+                          <td className="py-3 px-3"><span className="bg-[#e8f4ef] text-[#27755f] px-2.5 py-1 rounded-full text-xs font-bold">{e.status}</span></td>
+                        </tr>
+                      ))}
+                      {employees.length === 0 && (
+                        <tr><td colSpan={7} className="py-6 text-center text-slate-400">Nenhum funcionário cadastrado.</td></tr>
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              )}
             </div>
           )}
 
