@@ -12,9 +12,12 @@ import jwt
 
 from src.config.settings import settings
 
-SECRET_KEY = getattr(settings, "JWT_SECRET_KEY", "bamboo_super_secret_jwt_key_2026_x98z7a")
-ALGORITHM = getattr(settings, "JWT_ALGORITHM", "HS256")
-ACCESS_TOKEN_EXPIRE_MINUTES = getattr(settings, "ACCESS_TOKEN_EXPIRE_MINUTES", 60 * 24)  # 24 horas
+if not settings.SECRET_KEY:
+    raise RuntimeError("SECRET_KEY não configurada.")
+
+SECRET_KEY: str = settings.SECRET_KEY
+ALGORITHM: str = settings.ALGORITHM
+ACCESS_TOKEN_EXPIRE_MINUTES: int = settings.ACCESS_TOKEN_EXPIRE_MINUTES
 
 
 def hash_password(password: str) -> str:

@@ -13,6 +13,7 @@ from pydantic import BaseModel, EmailStr, Field
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_session
@@ -21,6 +22,7 @@ from src.core.security import hash_password, verify_password, create_access_toke
 
 router = APIRouter(prefix="/api/v1/auth", tags=["Autenticação & RBAC"])
 security_scheme = HTTPBearer(auto_error=False)
+VALID_ROLES = {"ADMIN", "LOGISTICA", "VENDAS", "COMPRAS", "FINANCEIRO"}
 
 
 # ==============================================================================
@@ -159,8 +161,39 @@ async def login(dto: UserLoginDTO, session: AsyncSession = Depends(get_db_sessio
 
 
 @router.post("/register", response_model=UserResponseDTO, status_code=status.HTTP_201_CREATED)
-async def register(dto: UserRegisterDTO, session: AsyncSession = Depends(get_db_session)):
-    """Cadastra um novo usuário corporativo no sistema com validação de e-mail único."""
+async def register(
+    dto: UserRegisterDTO,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_scheme),
+    session: AsyncSession = Depends(get_db_session)
+):
+    """Cadastra um novo usuário corporativo no sistema com validação de e-mail único e proteção contra escalada de privilégio."""
+    role_upper = dto.role.strip().upper()
+    if role_upper not in VALID_ROLES:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Papel (role) inválido."
+        )
+
+    if role_upper == "ADMIN":
+        admin_stmt = select(UserORM).where(UserORM.role == "ADMIN")
+        admin_res = await session.execute(admin_stmt)
+        existing_admin = admin_res.scalars().first()
+        if existing_admin is not None:
+            is_authorized_admin = False
+            if credentials and credentials.credentials:
+                payload = decode_access_token(credentials.credentials)
+                if payload and "sub" in payload:
+                    caller_stmt = select(UserORM).where(UserORM.email == payload.get("sub"))
+                    caller_res = await session.execute(caller_stmt)
+                    caller = caller_res.scalar_one_or_none()
+                    if caller and caller.is_active and (caller.role or "").upper() == "ADMIN":
+                        is_authorized_admin = True
+            if not is_authorized_admin:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="Escalada de privilégio bloqueada: apenas um ADMIN autenticado pode registrar outro ADMIN."
+                )
+
     email_clean = dto.email.strip().lower()
     stmt = select(UserORM).where(UserORM.email == email_clean)
     res = await session.execute(stmt)
@@ -174,11 +207,18 @@ async def register(dto: UserRegisterDTO, session: AsyncSession = Depends(get_db_
         name=dto.name.strip(),
         email=email_clean,
         password_hash=hash_password(dto.password),
-        role=dto.role.upper(),
+        role=role_upper,
         is_active=True
     )
     session.add(new_user)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Já existe um usuário cadastrado com este e-mail."
+        )
     await session.refresh(new_user)
 
     return UserResponseDTO(
