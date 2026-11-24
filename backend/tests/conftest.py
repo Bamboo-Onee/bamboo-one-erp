@@ -3,11 +3,20 @@
 import pytest
 from httpx import ASGITransport, AsyncClient
 from src.main import app
+from src.core.database import engine
 
 
 @pytest.fixture(scope="session")
 def anyio_backend():
     return "asyncio"
+
+
+@pytest.fixture(autouse=True)
+async def _dispose_db_pool_per_test():
+    """Garante que conexões asyncpg do pool não fiquem presas a Event Loops encerrados entre testes."""
+    await engine.dispose()
+    yield
+    await engine.dispose()
 
 
 @pytest.fixture
