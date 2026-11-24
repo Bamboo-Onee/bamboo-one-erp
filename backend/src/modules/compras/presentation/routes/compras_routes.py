@@ -9,7 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_session
-from src.core.models import PurchaseOrderORM, PurchaseOrderItemORM
+from src.core.models import PurchaseOrderORM, PurchaseOrderItemORM, UserORM
+from src.modules.auth.presentation.routes.auth_routes import require_roles
 
 router = APIRouter(prefix="/api/v1/purchases", tags=["Compras Nacionais"])
 
@@ -38,12 +39,13 @@ class PurchaseOrderResponseDTO(BaseModel):
 @router.post("", response_model=PurchaseOrderResponseDTO, status_code=status.HTTP_201_CREATED)
 async def create_purchase_order(
     dto: PurchaseOrderCreateDTO,
-    session: AsyncSession = Depends(get_db_session)
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(require_roles(["COMPRAS"]))
 ):
     if not dto.items:
         raise HTTPException(status_code=400, detail="O pedido de compra deve conter ao menos um item.")
 
-    po_num = f"PO-{datetime.utcnow().year}-{uuid.uuid4().hex[:4].upper()}"
+    po_num = f"PO-{datetime.utcnow().year}-{uuid.uuid4().hex[:6].upper()}"
     total = sum(it.quantity * it.unit_price for it in dto.items)
 
     po = PurchaseOrderORM(
@@ -79,7 +81,10 @@ async def create_purchase_order(
 
 
 @router.get("", response_model=List[PurchaseOrderResponseDTO])
-async def list_purchase_orders(session: AsyncSession = Depends(get_db_session)):
+async def list_purchase_orders(
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(require_roles(["COMPRAS", "FINANCEIRO", "LOGISTICA"]))
+):
     stmt = select(PurchaseOrderORM).order_by(PurchaseOrderORM.id.desc())
     res = await session.execute(stmt)
     return [

@@ -6,10 +6,12 @@ import uuid
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_session
-from src.core.models import DeliveryORM
+from src.core.models import DeliveryORM, UserORM
+from src.modules.auth.presentation.routes.auth_routes import require_roles
 
 router = APIRouter(prefix="/api/v1/deliveries", tags=["Produção & Entregas"])
 
@@ -31,9 +33,10 @@ class DeliveryResponseDTO(DeliveryCreateDTO):
 @router.post("", response_model=DeliveryResponseDTO, status_code=status.HTTP_201_CREATED)
 async def create_delivery(
     dto: DeliveryCreateDTO,
-    session: AsyncSession = Depends(get_db_session)
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(require_roles(["LOGISTICA"]))
 ):
-    del_num = f"ENT-{uuid.uuid4().hex[:5].upper()}"
+    del_num = f"ENT-{uuid.uuid4().hex[:6].upper()}"
     deliv = DeliveryORM(
         delivery_number=del_num,
         customer_name=dto.customer_name,
@@ -58,7 +61,10 @@ async def create_delivery(
 
 
 @router.get("", response_model=List[DeliveryResponseDTO])
-async def list_deliveries(session: AsyncSession = Depends(get_db_session)):
+async def list_deliveries(
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(require_roles(["LOGISTICA", "VENDAS"]))
+):
     stmt = select(DeliveryORM).order_by(DeliveryORM.id.desc())
     res = await session.execute(stmt)
     deliveries = res.scalars().all()
@@ -70,7 +76,10 @@ async def list_deliveries(session: AsyncSession = Depends(get_db_session)):
         ]
         for it in seed:
             session.add(it)
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
         stmt = select(DeliveryORM).order_by(DeliveryORM.id.desc())
         res = await session.execute(stmt)
         deliveries = res.scalars().all()

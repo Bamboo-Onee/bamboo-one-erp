@@ -6,10 +6,12 @@ import uuid
 from pydantic import BaseModel, Field
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_session
-from src.core.models import SalesOrderORM, SalesOrderItemORM
+from src.core.models import SalesOrderORM, SalesOrderItemORM, UserORM
+from src.modules.auth.presentation.routes.auth_routes import require_roles
 
 router = APIRouter(prefix="/api/v1/sales", tags=["Comercial & Vendas"])
 
@@ -40,12 +42,13 @@ class SalesOrderResponseDTO(BaseModel):
 @router.post("", response_model=SalesOrderResponseDTO, status_code=status.HTTP_201_CREATED)
 async def create_sales_order(
     dto: SalesOrderCreateDTO,
-    session: AsyncSession = Depends(get_db_session)
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(require_roles(["VENDAS"]))
 ):
     if not dto.items:
         raise HTTPException(status_code=400, detail="O pedido de venda deve conter ao menos um item.")
 
-    ord_num = f"VEN-{datetime.utcnow().year}-{uuid.uuid4().hex[:4].upper()}"
+    ord_num = f"VEN-{datetime.utcnow().year}-{uuid.uuid4().hex[:6].upper()}"
     total = sum(it.quantity * it.unit_price for it in dto.items)
 
     order = SalesOrderORM(
@@ -83,7 +86,10 @@ async def create_sales_order(
 
 
 @router.get("", response_model=List[SalesOrderResponseDTO])
-async def list_sales_orders(session: AsyncSession = Depends(get_db_session)):
+async def list_sales_orders(
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(require_roles(["VENDAS", "FINANCEIRO", "LOGISTICA"]))
+):
     stmt = select(SalesOrderORM).order_by(SalesOrderORM.id.desc())
     res = await session.execute(stmt)
     orders = res.scalars().all()
@@ -95,7 +101,10 @@ async def list_sales_orders(session: AsyncSession = Depends(get_db_session)):
         ]
         for it in seed:
             session.add(it)
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
         stmt = select(SalesOrderORM).order_by(SalesOrderORM.id.desc())
         res = await session.execute(stmt)
         orders = res.scalars().all()

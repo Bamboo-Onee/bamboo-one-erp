@@ -9,7 +9,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_session
-from src.core.models import ImportProcessORM
+from src.core.models import ImportProcessORM, UserORM
+from src.modules.auth.presentation.routes.auth_routes import require_roles
 
 router = APIRouter(prefix="/api/v1/imports", tags=["Importações"])
 
@@ -35,9 +36,10 @@ class ImportProcessResponseDTO(ImportProcessCreateDTO):
 @router.post("", response_model=ImportProcessResponseDTO, status_code=status.HTTP_201_CREATED)
 async def create_import_process(
     dto: ImportProcessCreateDTO,
-    session: AsyncSession = Depends(get_db_session)
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(require_roles(["COMPRAS", "LOGISTICA"]))
 ):
-    proc_num = f"IMP-{datetime.utcnow().year}-{uuid.uuid4().hex[:3].upper()}"
+    proc_num = f"IMP-{datetime.utcnow().year}-{uuid.uuid4().hex[:6].upper()}"
     imp = ImportProcessORM(
         process_number=proc_num,
         supplier_name=dto.supplier_name,
@@ -70,7 +72,10 @@ async def create_import_process(
 
 
 @router.get("", response_model=List[ImportProcessResponseDTO])
-async def list_import_processes(session: AsyncSession = Depends(get_db_session)):
+async def list_import_processes(
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(require_roles(["COMPRAS", "LOGISTICA", "FINANCEIRO"]))
+):
     stmt = select(ImportProcessORM).order_by(ImportProcessORM.id.desc())
     res = await session.execute(stmt)
     return [

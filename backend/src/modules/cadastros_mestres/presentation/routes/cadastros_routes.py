@@ -5,6 +5,8 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_session
+from src.core.models import UserORM
+from src.modules.auth.presentation.routes.auth_routes import get_current_user, require_roles
 from src.modules.cadastros_mestres.application.dtos.product_dto import (
     ProductCreateDTO, ProductResponseDTO,
     CustomerCreateDTO, CustomerResponseDTO,
@@ -26,7 +28,8 @@ router = APIRouter(prefix="/api/v1", tags=["Cadastros Mestres"])
 @router.post("/products", response_model=ProductResponseDTO, status_code=status.HTTP_201_CREATED)
 async def create_product(
     dto: ProductCreateDTO,
-    session: AsyncSession = Depends(get_db_session)
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(require_roles(["LOGISTICA", "COMPRAS", "VENDAS"]))
 ):
     use_case = ProductUseCases(SQLAlchemyProductRepository(session))
     try:
@@ -36,13 +39,20 @@ async def create_product(
 
 
 @router.get("/products", response_model=List[ProductResponseDTO])
-async def list_products(session: AsyncSession = Depends(get_db_session)):
+async def list_products(
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(get_current_user)
+):
     use_case = ProductUseCases(SQLAlchemyProductRepository(session))
     return await use_case.list_products()
 
 
 @router.delete("/products/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_product(product_id: int, session: AsyncSession = Depends(get_db_session)):
+async def delete_product(
+    product_id: int,
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(require_roles(["ADMIN"]))
+):
     use_case = ProductUseCases(SQLAlchemyProductRepository(session))
     success = await use_case.delete_product(product_id)
     if not success:
@@ -55,7 +65,8 @@ async def delete_product(product_id: int, session: AsyncSession = Depends(get_db
 @router.post("/customers", response_model=CustomerResponseDTO, status_code=status.HTTP_201_CREATED)
 async def create_customer(
     dto: CustomerCreateDTO,
-    session: AsyncSession = Depends(get_db_session)
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(require_roles(["VENDAS", "FINANCEIRO"]))
 ):
     use_case = CustomerUseCases(SQLAlchemyCustomerRepository(session))
     try:
@@ -65,13 +76,20 @@ async def create_customer(
 
 
 @router.get("/customers", response_model=List[CustomerResponseDTO])
-async def list_customers(session: AsyncSession = Depends(get_db_session)):
+async def list_customers(
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(get_current_user)
+):
     use_case = CustomerUseCases(SQLAlchemyCustomerRepository(session))
     return await use_case.list_customers()
 
 
 @router.delete("/customers/{customer_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_customer(customer_id: int, session: AsyncSession = Depends(get_db_session)):
+async def delete_customer(
+    customer_id: int,
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(require_roles(["ADMIN"]))
+):
     use_case = CustomerUseCases(SQLAlchemyCustomerRepository(session))
     success = await use_case.delete_customer(customer_id)
     if not success:
@@ -84,7 +102,8 @@ async def delete_customer(customer_id: int, session: AsyncSession = Depends(get_
 @router.post("/vehicles", response_model=VehicleResponseDTO, status_code=status.HTTP_201_CREATED)
 async def create_vehicle(
     dto: VehicleCreateDTO,
-    session: AsyncSession = Depends(get_db_session)
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(require_roles(["LOGISTICA"]))
 ):
     use_case = VehicleUseCases(SQLAlchemyVehicleRepository(session))
     try:
@@ -94,13 +113,20 @@ async def create_vehicle(
 
 
 @router.get("/vehicles", response_model=List[VehicleResponseDTO])
-async def list_vehicles(session: AsyncSession = Depends(get_db_session)):
+async def list_vehicles(
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(get_current_user)
+):
     use_case = VehicleUseCases(SQLAlchemyVehicleRepository(session))
     return await use_case.list_vehicles()
 
 
 @router.delete("/vehicles/{vehicle_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_vehicle(vehicle_id: int, session: AsyncSession = Depends(get_db_session)):
+async def delete_vehicle(
+    vehicle_id: int,
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(require_roles(["ADMIN"]))
+):
     use_case = VehicleUseCases(SQLAlchemyVehicleRepository(session))
     success = await use_case.delete_vehicle(vehicle_id)
     if not success:

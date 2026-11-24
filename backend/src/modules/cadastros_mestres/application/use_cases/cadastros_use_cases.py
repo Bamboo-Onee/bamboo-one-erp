@@ -1,6 +1,8 @@
 """Casos de Uso da Camada de Aplicação para Cadastros Mestres."""
 
 from typing import List
+from sqlalchemy.exc import IntegrityError
+
 from src.modules.cadastros_mestres.domain.entities.product import Product, Dimensions
 from src.modules.cadastros_mestres.domain.entities.customer import Customer
 from src.modules.cadastros_mestres.domain.entities.vehicle import Vehicle
@@ -41,7 +43,13 @@ class ProductUseCases:
             fragile=dto.fragile
         )
 
-        saved = await self.repo.create(domain_product)
+        try:
+            saved = await self.repo.create(domain_product)
+        except IntegrityError as exc:
+            if hasattr(self.repo, "session"):
+                await self.repo.session.rollback()
+            raise ValueError(f"Já existe um produto com o SKU '{dto.sku}'.") from exc
+
         return ProductResponseDTO(
             id=saved.id or 0,
             sku=saved.sku,
@@ -107,7 +115,13 @@ class CustomerUseCases:
             credit_limit=dto.credit_limit
         )
 
-        saved = await self.repo.create(domain_cust)
+        try:
+            saved = await self.repo.create(domain_cust)
+        except IntegrityError as exc:
+            if hasattr(self.repo, "session"):
+                await self.repo.session.rollback()
+            raise ValueError(f"Já existe cliente com o documento '{dto.document}'.") from exc
+
         return CustomerResponseDTO(
             id=saved.id or 0,
             name=saved.name,
@@ -158,7 +172,13 @@ class VehicleUseCases:
             max_payload_kg=dto.max_payload_kg
         )
 
-        saved = await self.repo.create(domain_veh)
+        try:
+            saved = await self.repo.create(domain_veh)
+        except IntegrityError as exc:
+            if hasattr(self.repo, "session"):
+                await self.repo.session.rollback()
+            raise ValueError(f"Já existe veículo com a placa '{dto.plate}'.") from exc
+
         return VehicleResponseDTO(
             id=saved.id or 0,
             plate=saved.plate,

@@ -2,12 +2,14 @@
 
 from typing import List
 from pydantic import BaseModel, Field
-from fastapi import APIRouter, Depends, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.core.database import get_db_session
-from src.core.models import EmployeeORM
+from src.core.models import EmployeeORM, UserORM
+from src.modules.auth.presentation.routes.auth_routes import require_roles
 
 router = APIRouter(prefix="/api/v1/employees", tags=["Recursos Humanos"])
 
@@ -29,7 +31,8 @@ class EmployeeResponseDTO(EmployeeCreateDTO):
 @router.post("", response_model=EmployeeResponseDTO, status_code=status.HTTP_201_CREATED)
 async def create_employee(
     dto: EmployeeCreateDTO,
-    session: AsyncSession = Depends(get_db_session)
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(require_roles(["ADMIN"]))
 ):
     emp = EmployeeORM(
         name=dto.name,
@@ -41,7 +44,14 @@ async def create_employee(
         status=dto.status
     )
     session.add(emp)
-    await session.commit()
+    try:
+        await session.commit()
+    except IntegrityError:
+        await session.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Já existe funcionário cadastrado com este CPF."
+        )
     await session.refresh(emp)
     return EmployeeResponseDTO(
         id=emp.id,
@@ -56,7 +66,10 @@ async def create_employee(
 
 
 @router.get("", response_model=List[EmployeeResponseDTO])
-async def list_employees(session: AsyncSession = Depends(get_db_session)):
+async def list_employees(
+    session: AsyncSession = Depends(get_db_session),
+    _: UserORM = Depends(require_roles(["ADMIN"]))
+):
     stmt = select(EmployeeORM).order_by(EmployeeORM.id.desc())
     res = await session.execute(stmt)
     employees = res.scalars().all()
@@ -69,7 +82,10 @@ async def list_employees(session: AsyncSession = Depends(get_db_session)):
         ]
         for it in seed:
             session.add(it)
-        await session.commit()
+        try:
+            await session.commit()
+        except IntegrityError:
+            await session.rollback()
         stmt = select(EmployeeORM).order_by(EmployeeORM.id.desc())
         res = await session.execute(stmt)
         employees = res.scalars().all()
